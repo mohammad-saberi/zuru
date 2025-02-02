@@ -4,6 +4,23 @@
 # IAM Role for CI/CD Pipeline
 #####################################
 
+# Define trust policy for GitLab OIDC
+data "aws_iam_policy_document" "ci_cd_assume_role_policy" {
+  statement {
+    effect = "Allow"
+    principals {
+      type        = "Federated"
+      identifiers = ["arn:aws:iam::${var.aws_account_id}:oidc-provider/gitlab.com"]
+    }
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    condition {
+      test     = "StringEquals"
+      variable = "gitlab.com:sub"
+      values   = ["project_path:m-saberi/zuru:ref_type:branch:ref:${var.environment}"]
+    }
+  }
+}
+
 resource "aws_iam_role" "ci_cd_role" {
   name               = "ciCdRole-${var.environment}"
   assume_role_policy = data.aws_iam_policy_document.ci_cd_assume_role_policy.json
