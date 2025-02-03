@@ -1,0 +1,97 @@
+# This is the GitLab CI/CD pipeline file for a Go application that builds a Docker image, scans it for vulnerabilities, and deploys it to AWS ECS using Terraform.
+# The pipeline consists of four stages: test, build, scan, validate and deploy.
+stages:
+  - test
+  - build
+  - scan
+  - validate
+  - deploy
+
+# Define global variables that are used across all jobs in the pipeline.
+variables:
+  ECR_REPOSITORY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/go-app-repository-${CI_ENVIRONMENT_NAME}"
+  IMAGE_TAG: "${CI_COMMIT_BRANCH}"
+  TF_ROOT: "terraform"
+  TFVARS_FILE: "terraform-${CI_COMMIT_BRANCH}.tfvars"
+
+# Define the jobs that make up the pipeline.
+test:
+  stage: test
+  image: golang:1.23.5-alpine
+  cache:
+    key: go-modules-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cache/go-build
+      - .cache/go-mod
+  script:
+    - mkdir -p .cache/go-{build,mod}
+    - go mod download
+    - go test -v ./...
+    - go install golang.org/x/lint/golint@latest
+    - golint ./...
+  rules:
+    - if: $CI_COMMIT_BRANCH == "development" || $CI_COMMIT_BRANCH == "production"
+
+# The build job uses the Docker image to build the application, tag the image, and push it to the ECR repository.
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPOSITORY
+  script:
+    - docker build -t "${APP_NAME}:${IMAGE_TAG}" .
+    - docker tag "${APP_NAME}:${IMAGE_TAG}" "${ECR_REPOSITORY}:${IMAGE_TAG}"
+    - docker push "${ECR_REPOSITORY}:${IMAGE_TAG}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "development" || $CI_COMMIT_BRANCH == "production"
+
+# The scan job uses Trivy to scan the Docker image for vulnerabilities and fails the pipeline if any high or critical vulnerabilities are found.
+scan:
+  stage: scan
+  image: aquasec/trivy:0.59.0
+  script:
+    - trivy image --exit-code 1 --severity HIGH,CRITICAL "${ECR_REPOSITORY}:${IMAGE_TAG}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "development" || $CI_COMMIT_BRANCH == "production"
+
+
+# The validate job uses Terraform to validate the infrastructure code in the Terraform directory.
+validate:
+  stage: validate
+  image: hashicorp/terraform:latest
+  script:
+    - cd ${TF_ROOT}
+    - terraform init
+    - terraform validate
+    - terraform fmt -check
+  rules:
+    - if: $CI_COMMIT_BRANCH == "development" || $CI_COMMIT_BRANCH == "production"
+
+# The deploy job uses Terraform to deploy the application to AWS ECS based on the environment (development or production).
+deploy:
+  stage: deploy
+  image: hashicorp/terraform:latest
+  before_script:
+    - apk add --no-cache aws-cli jq
+    - export AWS_WEB_IDENTITY_TOKEN_FILE=${CI_PROJECT_DIR}/web_identity_token
+    - echo ${CI_JOB_JWT_V2} > ${AWS_WEB_IDENTITY_TOKEN_FILE}
+    - aws sts assume-role-with-web-identity \
+        --role-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ciCdRole-${CI_ENVIRONMENT_NAME}" \
+        --web-identity-token file://${AWS_WEB_IDENTITY_TOKEN_FILE} \
+        --role-session-name "gitlab-ci-${CI_PIPELINE_ID}" > /tmp/credentials
+    - export AWS_ACCESS_KEY_ID=$(jq -r .Credentials.AccessKeyId /tmp/credentials)
+    - export AWS_SECRET_ACCESS_KEY=$(jq -r .Credentials.SecretAccessKey /tmp/credentials)
+    - export AWS_SESSION_TOKEN=$(jq -r .Credentials.SessionToken /tmp/credentials)
+  script:
+    - cd ${TF_ROOT}
+    - terraform init
+    - terraform apply -auto-approve -var="image_tag=${IMAGE_TAG}" -var="environment=${CI_ENVIRONMENT_NAME}" -var-file="${TFVARS_FILE}"
+  environment:
+    name: ${CI_ENVIRONMENT_SLUG}
+    url: http://$(terraform output -raw alb_dns_name)
+  rules:
+    - if: $CI_COMMIT_BRANCH == "development"
+    - if: $CI_COMMIT_BRANCH == "production"
+      when: manual
