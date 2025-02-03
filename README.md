@@ -2,7 +2,7 @@
 
 For testing the app in a local environment, please head over to the local branch and follow the related readme file.
 
-git clone -b local https://gitlab.com/your-repo/go-microservice.git
+git clone -b local https://github.com/mohammad-saberi/zuru.git
 
 # Assessment Phase 2
 
