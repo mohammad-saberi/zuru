@@ -9,8 +9,6 @@ stages:
 
 # Define global variables that are used across all jobs in the pipeline.
 variables:
-  APP_NAME: "go-app"
-  AWS_REGION: "us-east-1"
   ECR_REPOSITORY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/go-app-repository-${CI_ENVIRONMENT_NAME}"
   IMAGE_TAG: "${CI_COMMIT_BRANCH}"
   TF_ROOT: "terraform"
